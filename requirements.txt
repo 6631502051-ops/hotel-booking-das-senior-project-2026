@@ -1,0 +1,3 @@
+paho-mqtt>=2.1,<3
+requests>=2.31,<3
+# gpiozero comes with Raspberry Pi OS; on a laptop the app runs without it (screen output only).

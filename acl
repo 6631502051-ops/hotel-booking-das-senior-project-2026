@@ -1,0 +1,14 @@
+# Who may publish (write) or subscribe (read) to which topic.
+# das/door/<room>/code    6-digit code typed on the keypad   keypad -> door
+# das/door/<room>/result  JSON result of the check           door   -> keypad
+# das/door/<room>/status  online / offline (retained)        door   -> keypad
+
+user das_keypad
+topic write das/door/+/code
+topic read das/door/+/result
+topic read das/door/+/status
+
+user das_door
+topic read das/door/+/code
+topic write das/door/+/result
+topic write das/door/+/status
