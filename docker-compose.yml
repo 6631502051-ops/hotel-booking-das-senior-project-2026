@@ -1,0 +1,77 @@
+services:
+  php-apache-environment:
+    restart: unless-stopped
+    build: 
+      context: ./php
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+    environment:
+      DB_HOST: db
+      DB_NAME: ${MYSQL_DATABASE:-digital_authentication_system_das}
+      DB_USER: ${MYSQL_USER:-app_user}
+      DB_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
+      OTP_WEBHOOK_URL: ${OTP_WEBHOOK_URL:-}
+      OTP_WEBHOOK_SECRET: ${OTP_WEBHOOK_SECRET:-}
+      OTP_DEBUG: ${OTP_DEBUG:-false}
+      DOOR_DEVICE_KEY: ${DOOR_DEVICE_KEY:?set DOOR_DEVICE_KEY in .env}
+      MQTT_KEYPAD_PASSWORD: ${MQTT_KEYPAD_PASSWORD:?set MQTT_KEYPAD_PASSWORD in .env}
+    volumes:
+      - ./php/src:/var/www/html/
+    ports:
+      # 127.0.0.1 = this computer only. Set WEB_BIND=0.0.0.0 in .env to let the Pi reach it over the LAN.
+      - "${WEB_BIND:-127.0.0.1}:8080:80"
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/mosquitto/config/start.sh"]
+    environment:
+      MQTT_KEYPAD_PASSWORD: ${MQTT_KEYPAD_PASSWORD:?set MQTT_KEYPAD_PASSWORD in .env}
+      MQTT_DOOR_PASSWORD: ${MQTT_DOOR_PASSWORD:?set MQTT_DOOR_PASSWORD in .env}
+    volumes:
+      - ./mosquitto/config:/mosquitto/config:ro
+      - mosquitto_data:/mosquitto/data
+    ports:
+      # Plain MQTT for a Pi on the LAN. Set MQTT_BIND=0.0.0.0 in .env to open it to the LAN.
+      # WebSockets (9001) is not published; Apache forwards /mqtt to it.
+      - "${MQTT_BIND:-127.0.0.1}:1883:1883"
+
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-digital_authentication_system_das}
+      MYSQL_USER: ${MYSQL_USER:-app_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # MySQL runs these files in filename order on a new volume only.
+      - ./php/src/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    profiles: ["admin"]
+    ports:
+      - "127.0.0.1:8000:80"
+    restart: always
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+    depends_on:
+      db:
+        condition: service_healthy
+      
+volumes:
+  mysql_data:
+    name: ${MYSQL_VOLUME_NAME:-project-tester-v1_mysql_data}
+  mosquitto_data:
