@@ -72,7 +72,7 @@ Response สำเร็จ (200):
 
 ไม่สำเร็จ: 403 (`invalid_code`, `not_in_stay`, `temporary_expired`), 429 (`locked_out` เมื่อผิด 5 ครั้งใน 5 นาที), 422 (`bad_format`), 401 (device key ผิด) ทุกครั้งบันทึกลงตาราง `door_access_log` โดยเก็บรหัสแบบปิดบัง เช่น `12****`
 
-Endpoint นี้ตรวจรหัสหลักหรือรหัสชั่วคราวของการจองสถานะ `active` ที่อยู่ในช่วงเวลาเข้าพักเท่านั้น หน้า `/door-index.html` ไม่เรียก API นี้ตรงๆ แล้ว แต่ส่งรหัสผ่าน MQTT ให้ Raspberry Pi เป็นผู้เรียก
+Endpoint นี้ตรวจรหัสหลักหรือรหัสชั่วคราวของการจองสถานะ `active` ที่อยู่ในช่วงเวลาเข้าพักเท่านั้น Raspberry Pi โหมดปกติเรียก endpoint นี้โดยตรงผ่าน HTTPS ผ่าน Cloudflare Tunnel
 
 ## 4. การชำระเงินและการยืนยันของแอดมิน
 
@@ -83,7 +83,7 @@ Endpoint นี้ตรวจรหัสหลักหรือรหัส�
 | POST | `/api/admin-payment-decision.php` | แอดมิน (session + `X-CSRF-Token`) | `{payment_id, decision: "approve" \| "reject", note}` |
 | GET | `/api/door-config.php` | หน้า keypad | บอกที่อยู่ MQTT WebSocket และบัญชี `das_keypad` |
 
-## MQTT topics
+## MQTT topics (optional experiment)
 
 | Topic | ผู้ส่ง → ผู้รับ | ข้อมูล |
 | --- | --- | --- |
