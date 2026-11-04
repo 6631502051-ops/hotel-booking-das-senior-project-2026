@@ -101,8 +101,8 @@ The automatic init scripts run only when the MySQL volume is empty. Existing dat
 - **ยืนยันชำระเงิน** calls `api/payment-request.php`, and the booking becomes `awaiting_approval`.
 - `admin.php` shows the request in **คำขอชำระเงินรอยืนยัน** (refreshed every 5 seconds). **ยืนยัน** sets the booking to `active`; **ปฏิเสธ** sets it to `rejected` and frees the room.
 - Only `active` bookings can create room codes on the dashboard during the stay.
-- `door-index.html` publishes the 6-digit code to MQTT topic `das/door/<room>/code`. The Raspberry Pi (`raspberry-pi/door_lock.py`) checks it with `api/door-authenticate.php` and publishes the result to `das/door/<room>/result`.
-- Apache forwards `/mqtt` to Mosquitto's WebSocket listener, so the keypad page and the Pi can use the same address as the website, including the Cloudflare tunnel. Set `MQTT_BIND=0.0.0.0` only if the Pi should use plain MQTT on port 1883 over the LAN.
+- The Raspberry Pi (`raspberry-pi/door_lock.py`) uses HTTPS to call `api/door-authenticate.php` through the Cloudflare Tunnel. The server checks the room code and returns `granted` or `denied`; the Pi then drives the lock hardware.
+- MQTT and the browser keypad integration remain in the project as an optional experiment only. They are not used by the default Raspberry Pi deployment; run the Pi with `--mqtt` to opt in.
 
 Raspberry Pi setup is described in `raspberry-pi/README.md`.
 
