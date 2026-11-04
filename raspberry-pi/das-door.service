@@ -11,6 +11,8 @@ Wants=network-online.target
 User=pi
 WorkingDirectory=/home/pi/das-door
 ExecStart=/home/pi/das-door/.venv/bin/python /home/pi/das-door/door_lock.py
+# API-only mode reads ROOM CODE lines from the connected keypad/input adapter.
+# Use --mqtt only for the optional MQTT experiment.
 Restart=always
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1

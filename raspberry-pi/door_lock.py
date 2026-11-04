@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """DAS Digital Door Lock simulation for Raspberry Pi.
 
-Waits for a 6-digit code on MQTT topic das/door/<room>/code, asks the hotel
-server whether the code may open the door (api/door-authenticate.php), shows
-UNLOCKED or ACCESS DENIED, drives LEDs / buzzer / relay / servo motors when GPIO
-is available, and publishes the result on das/door/<room>/result.
+The default mode reads ``ROOM CODE`` lines from stdin, asks the hotel server
+over HTTPS whether the code may open the door
+(``api/door-authenticate.php``), and shows UNLOCKED or ACCESS DENIED. This
+keeps the production path API-only. MQTT support remains available for
+experiments with the optional ``--mqtt`` flag.
 
 Servo motors (e.g. SG90 / MG90S / MG996R): when a code is accepted, each servo
 assigned to that room turns 90 degrees to open the door, then turns back after
@@ -12,6 +13,8 @@ DAS_UNLOCK_SECONDS. Two servos are set up by default (GPIO 18 and 13).
 
 Run:            python3 door_lock.py
 Check one code: python3 door_lock.py --check 101 123456   (calls the API only, no MQTT)
+Read codes:     echo "101 123456" | python3 door_lock.py
+Optional MQTT:  python3 door_lock.py --mqtt
 Test servos:    python3 door_lock.py --test-servo           (open -> wait -> close, no server needed)
 Settings come from environment variables or door.env next to this file
 (see door.env.example).
@@ -30,10 +33,13 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-import paho.mqtt.client as mqtt
 import requests
+
+if TYPE_CHECKING:
+    import paho.mqtt.client as mqtt
 
 CODE_PATTERN = re.compile(r"\d{6}")
 ROOM_PATTERN = re.compile(r"[A-Za-z0-9-]{1,20}")
@@ -361,24 +367,23 @@ class Door:
     def __init__(self, settings: Settings, hardware: Hardware):
         self.settings = settings
         self.hardware = hardware
-        self.jobs: queue.Queue[tuple[mqtt.Client, str, str]] = queue.Queue()
+        self.jobs: queue.Queue[tuple[str, str, mqtt.Client | None]] = queue.Queue()
         self.timers: dict[str, threading.Timer] = {}
         self.lock = threading.Lock()
         threading.Thread(target=self._worker, name="door-worker", daemon=True).start()
 
-    def submit(self, client: mqtt.Client, room: str, code: str) -> None:
-        # The MQTT network thread only queues the job; HTTP calls run in the worker.
-        self.jobs.put((client, room, code))
+    def submit(self, room: str, code: str, client: mqtt.Client | None = None) -> None:
+        self.jobs.put((room, code, client))
 
     def _worker(self) -> None:
         while True:
-            client, room, code = self.jobs.get()
+            room, code, client = self.jobs.get()
             try:
-                self.handle(client, room, code)
+                self.handle(room, code, client)
             except Exception as error:  # keep the door service alive
                 log(f"ผิดพลาดขณะตรวจรหัสห้อง {room}: {error!r}")
 
-    def handle(self, client: mqtt.Client, room: str, code: str) -> dict:
+    def handle(self, room: str, code: str, client: mqtt.Client | None = None) -> dict:
         masked = code[:2] + "****" if CODE_PATTERN.fullmatch(code) else "******"
         log(f"ห้อง {room}: ได้รับรหัส {masked}")
 
@@ -396,7 +401,11 @@ class Door:
 
         payload = {"room": room, "time": now_text(), **{k: v for k, v in outcome.items() if v is not None}}
         if client is not None:
-            client.publish(f"das/door/{room}/result", json.dumps(payload, ensure_ascii=False), qos=1)
+            client.publish(
+                f"das/door/{room}/result",
+                json.dumps(payload, ensure_ascii=False),
+                qos=1,
+            )
         return payload
 
     def unlock(self, room: str, outcome: dict) -> None:
@@ -421,6 +430,8 @@ class Door:
 
 # --------------------------------------------------------------------------- MQTT
 def make_client(settings: Settings, room: str, door: Door) -> mqtt.Client:
+    import paho.mqtt.client as mqtt
+
     url = urlparse(settings.mqtt_url)
     websockets = url.scheme in ("ws", "wss")
     secure = url.scheme in ("wss", "mqtts")
@@ -455,7 +466,7 @@ def make_client(settings: Settings, room: str, door: Door) -> mqtt.Client:
     def on_message(c, userdata, msg):
         if msg.retain:  # never act on an old stored code
             return
-        door.submit(c, room, msg.payload.decode("utf-8", errors="ignore").strip())
+        door.submit(room, msg.payload.decode("utf-8", errors="ignore").strip(), c)
 
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
@@ -468,6 +479,7 @@ def main() -> int:
     load_env_file(Path(__file__).with_name("door.env"))
     parser = argparse.ArgumentParser(description="DAS digital door lock simulation")
     parser.add_argument("--check", nargs=2, metavar=("ROOM", "CODE"), help="ตรวจรหัสกับ API ครั้งเดียว แล้วออก")
+    parser.add_argument("--mqtt", action="store_true", help="เปิดโหมดทดลอง MQTT แทน API-only stdin")
     parser.add_argument("--test-servo", nargs="?", const="*", metavar="ROOM",
                         help="ทดสอบ servo: หมุนเปิด รอ DAS_UNLOCK_SECONDS แล้วหมุนปิด (ไม่ต้องใช้เซิร์ฟเวอร์)")
     args = parser.parse_args()
@@ -491,32 +503,49 @@ def main() -> int:
         return 0
 
     if args.check:
-        result = door.handle(None, args.check[0], args.check[1])
+        result = door.handle(args.check[0], args.check[1])
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if result["result"] == "granted":
             threading.Event().wait(settings.unlock_seconds + 0.2)
         hardware.shutdown()
         return 0 if result["result"] == "granted" else 1
 
-    log(f"DAS Door Lock เริ่มทำงาน ห้อง {', '.join(settings.rooms)} | MQTT {settings.mqtt_url} | API {settings.api_url}")
-    clients = [make_client(settings, room, door) for room in settings.rooms]
-    for client in clients:
-        client.loop_start()
-
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    stop.wait()
+
+    if args.mqtt:
+        log(f"DAS Door Lock เริ่มโหมด MQTT ทดลอง ห้อง {', '.join(settings.rooms)} | API {settings.api_url}")
+        clients = [make_client(settings, room, door) for room in settings.rooms]
+        for client in clients:
+            client.loop_start()
+        stop.wait()
+        for room, client in zip(settings.rooms, clients):
+            try:
+                client.publish(f"das/door/{room}/status", "offline", qos=1, retain=True).wait_for_publish(2)
+            except (RuntimeError, ValueError):
+                pass
+            client.disconnect()
+            client.loop_stop()
+    else:
+        log(f"DAS Door Lock เริ่มโหมด API-only ห้อง {', '.join(settings.rooms)} | API {settings.api_url}")
+        log("รอรหัสรูปแบบ ROOM CODE เช่น 101 123456 (คั่นด้วยช่องว่าง)")
+        for line in sys.stdin:
+            if stop.is_set():
+                break
+            parts = line.strip().split()
+            if len(parts) != 2:
+                log("รูปแบบไม่ถูกต้อง ต้องเป็น ROOM CODE เช่น 101 123456")
+                continue
+            room, code = parts
+            if room not in settings.rooms:
+                log(f"ห้องไม่อยู่ใน DAS_ROOMS: {room}")
+                continue
+            result = door.handle(room, code)
+            print(json.dumps(result, ensure_ascii=False), flush=True)
 
     log("กำลังปิดโปรแกรม...")
     hardware.shutdown()
-    for room, client in zip(settings.rooms, clients):
-        try:
-            client.publish(f"das/door/{room}/status", "offline", qos=1, retain=True).wait_for_publish(2)
-        except (RuntimeError, ValueError):
-            pass  # not connected: the broker's last-will message marks the door offline instead
-        client.disconnect()
-        client.loop_stop()
     return 0
 
 
